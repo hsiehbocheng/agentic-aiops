@@ -9,7 +9,9 @@ import warnings
 import mlflow
 
 _SCHEMA_WARNING_TEXT = "Value 'True' is not supported in schema, ignoring v=True"
+_UNSUPPORTED_SCHEMA_KEY_WARNING_TEXT = "is not supported in schema, ignoring"
 _CONTEXT_WARNING_TEXT = "was created in a different Context"
+_TOOL_DEF_WARNING_TEXT = "Failed to parse tool definition for tracing:"
 _FILTERS_INSTALLED = False
 _STDERR_PATCHED = False
 
@@ -59,7 +61,18 @@ class _DropSchemaWarning(logging.Filter):
     """Suppress noisy schema compatibility messages from tool schema conversion."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return _SCHEMA_WARNING_TEXT not in record.getMessage()
+        message = record.getMessage()
+        return (
+            _SCHEMA_WARNING_TEXT not in message
+            and _UNSUPPORTED_SCHEMA_KEY_WARNING_TEXT not in message
+        )
+
+
+class _DropToolDefinitionParseWarning(logging.Filter):
+    """Suppress noisy MLflow tool-definition parsing warnings."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _TOOL_DEF_WARNING_TEXT not in record.getMessage()
 
 
 def _install_noise_filters() -> None:
@@ -74,19 +87,33 @@ def _install_noise_filters() -> None:
         autolog_logger.addFilter(_DropMlflowContextWarning())
 
     schema_filter = _DropSchemaWarning()
+    tool_def_filter = _DropToolDefinitionParseWarning()
     for logger_name in ("google", "google.genai", "langchain_google_genai"):
         schema_logger = logging.getLogger(logger_name)
         if not any(isinstance(f, _DropSchemaWarning) for f in schema_logger.filters):
             schema_logger.addFilter(schema_filter)
 
+    tracer_logger = logging.getLogger("mlflow.langchain.langchain_tracer")
+    if not any(isinstance(f, _DropToolDefinitionParseWarning) for f in tracer_logger.filters):
+        tracer_logger.addFilter(tool_def_filter)
+
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         if not any(isinstance(f, _DropSchemaWarning) for f in handler.filters):
             handler.addFilter(schema_filter)
+        if not any(isinstance(f, _DropToolDefinitionParseWarning) for f in handler.filters):
+            handler.addFilter(tool_def_filter)
 
     # Some providers write schema warnings directly to stderr (not logging/warnings).
     if not _STDERR_PATCHED:
-        sys.stderr = _FilteredStderr(sys.stderr, (_SCHEMA_WARNING_TEXT,))
+        sys.stderr = _FilteredStderr(
+            sys.stderr,
+            (
+                _SCHEMA_WARNING_TEXT,
+                _UNSUPPORTED_SCHEMA_KEY_WARNING_TEXT,
+                _TOOL_DEF_WARNING_TEXT,
+            ),
+        )
         _STDERR_PATCHED = True
 
     _FILTERS_INSTALLED = True
